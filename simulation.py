@@ -523,6 +523,18 @@ class SimulationRunner:
         # Com normalization_mode='flux', o operador usa o fluxo prescrito
         # diretamente nas equações de Bateman. As MicroXS são calculadas
         # internamente na primeira iteração.
+        # ── IndependentOperator — Modo Flux (reator) V242 ───────────────────
+        #
+        # No modo 'flux', o operador usa o fluxo prescrito diretamente nas
+        # equações de Bateman. As MicroXS são calculadas internamente na
+        # primeira iteração via transporte MC.
+        #
+        # API OpenMC 0.15.3:
+        #   IndependentOperator(materials, fluxes, chain_file, normalization_mode='flux')
+        #   - materials: lista de materiais depletáveis
+        #   - fluxes: lista de fluxos [n/cm²/s] por material (mesmo valor para todos)
+        #   - chain_file: arquivo chain XML
+        #   - normalization_mode='flux': usa fluxes diretamente (sem source_rate)
         #
         # Referência: docs.openmc.org/en/v0.15.3 — Depletion and Transmutation
         self.logger.info("Criando IndependentOperator com normalization_mode='flux'...")
