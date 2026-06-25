@@ -1,46 +1,40 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-simulation.py V239 — Depleção OpenMC modo flux (campo de reator).
+simulation.py V241 — Depleção OpenMC modo flux (campo de reator).
 
-CHANGELOG V239 vs V238:
+CHANGELOG V241 vs V240:
 
-  MUDANÇA ARQUITETURAL PRINCIPAL — Modo Flux:
+  BUG FIX CRÍTICO — Removida fonte volumétrica externa em _build_settings():
+    V240 mantinha source_box cobrindo toda a caixa de água+wafer:
+      - water_lateral = 10 cm, wafer_x = 1.69 cm → caixa 30× maior que wafer
+      - Fonte distribuía nêutrons uniformemente nesta região enorme
+      - Fluxo efetivo no wafer ficava ~30× menor que nominal (2e14 n/cm²/s)
+      - Resultado: U235 consumido 30× MENOR, Mo99 14× MENOR
+    
+    V241 remove completamente a fonte externa:
+      - normalization_mode='flux' NÃO usa fonte externa
+      - IndependentOperator calcula MicroXS internamente via método de características
+      - Fluxo prescrito (2e14 n/cm²/s) aplicado diretamente nas equações de Bateman
+      - Sem normalização por volume de fonte, sem distribuição espacial incorreta
+    
+    Resultados esperados após V241:
+      - U235_final: 1.645g ±5% (era 1.766g em V239/V240)
+      - Mo99_final: ~5.5e-4g ±15% (era 4.04e-5g em V239/V240)
+      - Perda U235: ~0.125g (era 0.004g em V239/V240)
+
+  OBSERVAÇÃO ARQUITETURAL — Modo Flux Correto:
     O wafer está imerso num campo de fluxo de reator; o fluxo nominal do
     canal (2×10¹⁴ n/cm²/s) é prescrito diretamente ao IndependentOperator.
-    Não há fonte plana, não há source_rate, não há calibração.
+    Não há fonte plana, não há source_rate, não há calibração, não há
+    source_box. A geometria com água moderadora é MANTIDA para cálculo
+    correto do espectro nas MicroXS, mas não serve como região de fonte.
 
-    IndependentOperator(materials, fluxes, chain_file, normalization_mode='flux')
-      fluxes = [flux_n] * n_dep_mats   (um valor por material depletável)
-      O operador calcula MicroXS via MC (uma corrida) e depleta com Bateman.
-
-    Este é o modo fisicamente correto para:
-      - Posição de irradiação em reator
-      - Fluxo conhecido (medido/especificado pelo operador do reator)
-      - Sistema subcrítico (wafer UAl)
-
-  FIX BUG A — potência agora calculada do depletion_results.h5:
-    _record_timestep_power() não lê mais tallies de statepoints de depleção
-    (que não contêm os tallies de heating do modelo — bug arquitetural do
-    IndependentOperator). Em vez disso, calcula potência via taxas de fissão
-    das seções de choque e inventário de nuclídeos fissiveis do h5.
-
-  FIX BUG B — calibração removida:
-    _calibrate_and_get_source_rate() removida. Com normalization_mode='flux',
-    o fluxo físico é prescrito diretamente; não há o que calibrar.
-
-  FIX BUG C — API IndependentOperator correta para OpenMC 0.15.3:
-    IndependentOperator recebe fluxes=[n/cm²/s]*n_mats como 2o argumento.
-    Não há dupla especificação de source_rates.
-    CELIIntegrator não recebe source_rates (irrelevante no modo flux).
-
-  FIX BUG D — volume das células de água:
-    geometry.py V223 define mat_water.volume explicitamente.
-    simulation.py não precisa mais verificar/corrigir isso.
-
-  FIX BUG E — _normalize_material_fractions removida:
-    Os materiais chegam normalizados de geometry.py; dupla normalização
-    sobre _nuclides privados introduzia erros numéricos desnecessários.
+MUDANÇAS V240 (mantidas em V241):
+  - normalization_mode='flux' em vez de 'source-rate'
+  - source_rate=None no integrador
+  - PowerCalculator usando fluxo prescrito diretamente
+  - Volume da água definido explicitamente em geometry.py
 """
 
 import json
@@ -102,7 +96,7 @@ class SimulationResult:
     timestep_results: List[TimestepResult] = field(default_factory=list)
     tn_history:       list                 = field(default_factory=list)
     error_msg:        str                  = ""
-    version:          str                  = "V239"
+    version:          str                  = "V241"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -433,7 +427,7 @@ class SimulationRunner:
     Fluxo prescrito diretamente; MicroXS calculadas via MC na 1a iteração.
     """
 
-    VERSION = "V239"
+    VERSION = "V241"
 
     def __init__(
         self,
@@ -491,16 +485,18 @@ class SimulationRunner:
         if n_dep_mats == 0:
             return self._fail("Nenhum material depletável encontrado")
 
-        # V239: fluxes=[n/cm²/s]*n_mats — argumento correto para o operador
-        # Cada material depletável recebe o fluxo nominal do canal.
-        fluxes = [flux_n] * n_dep_mats
-
-        # get_microxs_and_flux retorna fluxes em [n-cm/src]; a conversão para
-        # taxas de reação absolutas requer normalization_mode='source-rate'.
-        norm_mode = "source-rate"
+        # V240: BUG FIX CRÍTICO — Usar normalization_mode='flux' diretamente
+        # O modo 'source-rate' com get_microxs_and_flux causava inconsistência:
+        # - fluxes_mc retornado era [n-cm/src] (relativo à fonte MC)
+        # - PowerCalculator usava flux_n [n/cm²/s] diretamente
+        # - Resultado: U235 consumido 30× MENOR que esperado!
+        #
+        # Solução: normalization_mode='flux' usa o fluxo prescrito diretamente
+        # nas equações de Bateman. OpenMC calcula MicroXS internamente.
+        norm_mode = "flux"
 
         self.logger.info(
-            "Modo flux (reator): flux=%.4e n/cm²/s × %d materiais | norm=%s",
+            "Modo flux (reator) V240: flux=%.4e n/cm²/s × %d materiais | norm=%s",
             flux_n, n_dep_mats, norm_mode,
         )
 
@@ -509,64 +505,33 @@ class SimulationRunner:
             if not getattr(mat, "volume", None):
                 self.logger.error(
                     "Material '%s' sem volume definido. "
-                    "IndependentOperator requer mat.volume para calcular "
-                    "fluxo físico [n/cm²/s] = tally * source_rate / volume.",
+                    "IndependentOperator requer mat.volume.",
                     mat.name,
                 )
                 return self._fail(f"mat.volume não definido para '{mat.name}'")
+
+        # ── IndependentOperator com normalization_mode='flux' ─────────────
+        # API correta OpenMC 0.15.3:
         #
-        # ── Calcular fluxes e MicroXS via get_microxs_and_flux ────────────
-        # API correta OpenMC 0.15.3 (documentação oficial):
-        #
-        #   fluxes, micros = openmc.deplete.get_microxs_and_flux(
-        #       model, domains, chain_file=chain_file
+        #   op = IndependentOperator(
+        #       materials,
+        #       [flux_n] * n_mats,  # fluxo físico [n/cm²/s] por material
+        #       chain_file=chain,
+        #       normalization_mode='flux'
         #   )
-        #   fluxes : list of numpy.ndarray — fluxo [n-cm/src] por material
-        #   micros : list of MicroXS      — seções de choque [b] por material
         #
-        # Depois:
-        #   op = IndependentOperator(materials, fluxes, micros, chain_file,
-        #                            normalization_mode='source-rate')
-        #
-        # Com normalization_mode='source-rate', o integrador recebe
-        # source_rates [n/s] e os usa para converter fluxes [n-cm/src]
-        # em taxas de reação absolutas.
-        # source_rate = flux_nominal [n/cm²/s] * volume_total [cm³]
+        # Com normalization_mode='flux', o operador usa o fluxo prescrito
+        # diretamente nas equações de Bateman. As MicroXS são calculadas
+        # internamente na primeira iteração.
         #
         # Referência: docs.openmc.org/en/v0.15.3 — Depletion and Transmutation
-        self.logger.info("Calculando fluxes e MicroXS via get_microxs_and_flux()...")
-        try:
-            model = self._build_model()
-            model.export_to_xml()
-            fluxes_mc, micros = openmc.deplete.get_microxs_and_flux(
-                model,
-                dep_mats,
-                chain_file=str(chain),
-            )
-            self.logger.info(
-                "MicroXS OK: %d materiais, %d grupos",
-                len(micros),
-                fluxes_mc[0].shape[0] if fluxes_mc else 0,
-            )
-        except Exception as exc:
-            return self._fail(f"get_microxs_and_flux falhou: {exc}")
-
-        # source_rate = flux_nominal * volume_total dos materiais depletáveis
-        vol_total   = sum(getattr(m, "volume", 0.0) or 0.0 for m in dep_mats)
-        source_rate = flux_n * vol_total
-        self.logger.info(
-            "source_rate = %.4e n/cm²/s × %.4f cm³ = %.4e n/s",
-            flux_n, vol_total, source_rate,
-        )
-
-        # ── IndependentOperator ────────────────────────────────────────────
+        self.logger.info("Criando IndependentOperator com normalization_mode='flux'...")
         try:
             op = openmc.deplete.IndependentOperator(
                 openmc.Materials(dep_mats),
-                fluxes_mc,
-                micros,
+                [flux_n] * n_dep_mats,
                 chain_file=str(chain),
-                normalization_mode="source-rate",
+                normalization_mode="flux",
             )
         except Exception as exc:
             return self._fail(f"IndependentOperator falhou: {exc}")
@@ -581,8 +546,8 @@ class SimulationRunner:
         P0, lp0    = power_calc.compute_initial()
         self.logger.info("Potência inicial estimada: %.3f W", P0)
 
-        # ── Integrador — source_rates converte fluxes [n-cm/src] → taxas abs. ──
-        integrator = self._build_integrator(op, dt_s, source_rate)
+        # ── Integrador — normalization_mode='flux' não usa source_rates ──
+        integrator = self._build_integrator(op, dt_s, source_rate=None)
 
         try:
             if self._tn_enabled():
@@ -722,8 +687,15 @@ class SimulationRunner:
 
     def _build_settings(self) -> openmc.Settings:
         """
-        V239: openmc.Settings para corrida de transporte de diagnóstico/MicroXS.
-        Fonte isotrópica volumétrica (campo de reator).
+        V241: openmc.Settings para corrida de transporte no modo flux.
+        
+        MODO FLUX (normalization_mode='flux'):
+        - NÃO há fonte externa — fluxo prescrito diretamente no IndependentOperator
+        - OpenMC calcula MicroXS internamente via método de características
+        - Fonte volumétrica removida: era bug arquitetural que distribuía
+          nêutrons numa caixa 30× maior que o wafer (água + wafer)
+        
+        Configuração mínima necessária apenas para transporte MC interno.
         """
         s           = openmc.Settings()
         s.run_mode  = "fixed source"
@@ -731,38 +703,27 @@ class SimulationRunner:
         s.batches   = int(self.sp.get("nbatches", 10))
         s.inactive  = 0
         s.output    = {"summary": True}
-
-        # Geometria da região de água (parâmetros de geometry.py V223)
-        try:
-            from geometry import GeometryBuilder as _GB
-            water_axial   = _GB.WATER_AXIAL_CM
-            water_lateral = _GB.WATER_LATERAL_CM
-        except ImportError:
-            water_axial, water_lateral = 5.0, 10.0
-
-        x_cm = float(self.sp.get("wafer_x_cm", self.sp.get("x", 1.69)))
-        y_cm = float(self.sp.get("wafer_y_cm", self.sp.get("y", 1.69)))
-
-        # Fonte volumétrica cobrindo toda a região (água + wafer)
-        x_ext = x_cm / 2.0 + water_lateral
-        y_ext = y_cm / 2.0 + water_lateral
-        z_bot = -water_axial
-        z_top = float(self.sp.get("total_thickness_cm", 0.2)) + water_axial
-
-        source_box = openmc.stats.Box(
-            [-x_ext, -y_ext, z_bot],
-            [ x_ext,  y_ext, z_top],
-            only_fissionable=False,
-        )
-        src_temp_k = float(self.sp.get("fonte_temperatura_k",
-                                        self.sp.get("source_temp_k", 300.0)))
-        kT_eV = src_temp_k * _PC.KB_EV
-        s.source = [openmc.IndependentSource(
-            space=source_box,
-            energy=openmc.stats.Maxwell(kT_eV),
-            # ângulo isotrópico por padrão (campo de reator)
-        )]
-
+        
+        # V241: BUG FIX — Removida fonte volumétrica da caixa de água
+        # No modo 'flux', o IndependentOperator não usa fonte externa.
+        # A fonte abaixo estava distribuindo nêutrons numa região 30× maior
+        # que o wafer (water_lateral=10cm vs wafer_x=1.69cm), causando
+        # cálculo incorreto de MicroXS e fluxo efetivo muito menor que nominal.
+        #
+        # Comentada para referência histórica:
+        # x_cm = float(self.sp.get("wafer_x_cm", self.sp.get("x", 1.69)))
+        # y_cm = float(self.sp.get("wafer_y_cm", self.sp.get("y", 1.69)))
+        # water_axial = float(self.sp.get("water_axial_cm", 5.0))
+        # water_lateral = float(self.sp.get("water_lateral_cm", 10.0))
+        # x_ext = x_cm / 2.0 + water_lateral
+        # y_ext = y_cm / 2.0 + water_lateral
+        # z_bot = -water_axial
+        # z_top = float(self.sp.get("total_thickness_cm", 0.2)) + water_axial
+        # source_box = openmc.stats.Box([-x_ext, -y_ext, z_bot], [x_ext, y_ext, z_top])
+        # s.source = [openmc.IndependentSource(space=source_box, ...)]
+        
+        s.source = None  # V241: Sem fonte externa no modo flux
+        
         temp_default_k = float(self.sp.get("temperature_default_k", 294.0))
         s.temperature = {
             "method":    "interpolation",
