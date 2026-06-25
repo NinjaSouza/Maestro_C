@@ -544,6 +544,7 @@ class SimulationRunner:
                 [flux_n] * n_dep_mats,
                 chain_file=str(chain),
                 normalization_mode="flux",
+                micros=None,
             )
         except Exception as exc:
             return self._fail(f"IndependentOperator falhou: {exc}")

@@ -6,11 +6,12 @@ __pycache__/
 *.pyd
 .Python
 *.so
-.coverage
-htmlcov/
-coverage/
-.pytest_cache/
-.mypy_cache/
+*.egg-info/
+dist/
+build/
+*.egg
+*.manifest
+*.spec
 
 # Virtual environments
 venv/
@@ -19,10 +20,11 @@ env/
 ENV/
 .ENV/
 
-# Build artifacts
-build/
-dist/
-*.egg-info/
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # Logs
 *.log
@@ -32,19 +34,17 @@ dist/
 .env.local
 *.env.*
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Testing
-.pytest_cache/
-.coverage*
-htmlcov/
 ```
